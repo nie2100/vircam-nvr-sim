@@ -12,6 +12,7 @@
 """
 import io
 import logging
+import re
 import socket
 import struct
 import threading
@@ -105,6 +106,10 @@ def parse_mjpeg_rtp(payload: bytes) -> Tuple[int, int, int, int, Optional[bytes]
 
 
 # ── RTSP 客户端 ───────────────────────────────────────────────
+class CodecUnsupportedError(ConnectionError):
+    """码流格式不受支持(如 H264)——永久性错误, 取流线程应报错退出而非重连."""
+
+
 def _recv_exact(sock: socket.socket, n: int, timeout: float = 8.0) -> bytes:
     sock.settimeout(timeout)
     buf = b""
@@ -114,6 +119,28 @@ def _recv_exact(sock: socket.socket, n: int, timeout: float = 8.0) -> bytes:
             raise ConnectionError("RTSP 连接关闭")
         buf += chunk
     return buf
+
+
+def _parse_sdp_codec(body: bytes) -> str:
+    """从 DESCRIBE 响应 body(SDP)解析视频 codec 名(rtpmap 行, 如 H264/JPEG).
+
+    2026-09-01 BUG-1 修复(DSH 实测反馈): 此前不解析 codec, 拉 H264 码流时
+    RFC2435(MJPEG)解包器会把 NAL 载荷误当 JPEG 分片 → 宽高 0、重建"结构合法
+    内容乱码"的 JPEG 且完全不报错(静默失败, 冒烟测试都测不出来)。
+    """
+    text = body.decode("utf-8", errors="replace")
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("a=rtpmap:"):
+            m = re.match(r"a=rtpmap:\d+\s+([A-Za-z0-9]+)", line)
+            if m:
+                return m.group(1).upper()
+    return ""
+
+
+def _codec_is_mjpeg(codec: str) -> bool:
+    """JPEG/MJPEG/MJPG 家族(含 JPEG2000 之外的 JPEG 变体)."""
+    return "JPEG" in codec or codec in ("MJPEG", "MJPG")
 
 
 def _read_rtsp_response(sock: socket.socket, timeout: float = 8.0) -> Tuple[int, Dict[str, str], bytes]:
@@ -157,6 +184,12 @@ def rtsp_open(ip: str, rtsp_port: int, username: str, password: str,
         # DESCRIBE
         s.sendall(f"DESCRIBE {base} RTSP/1.0\r\nCSeq: 2\r\nAccept: application/sdp\r\n{auth}\r\n".encode())
         st, hdrs, body = _read_rtsp_response(s, timeout)
+        # 码流格式校验(2026-09-01 BUG-1): 非 MJPEG 明确报错, 防 H264 静默乱码
+        codec = _parse_sdp_codec(body)
+        if codec and not _codec_is_mjpeg(codec):
+            raise CodecUnsupportedError(
+                f"码流格式 {codec} 不受支持——当前仅支持 MJPEG 码流。"
+                f"创建模拟摄像头请指定 codec=MJPEG, 或换用支持 MJPEG 的真实设备")
         # SETUP (TCP interleaved)
         s.sendall((f"SETUP {base}/track1 RTSP/1.0\r\nCSeq: 3\r\n"
                    f"Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n{auth}\r\n").encode())
@@ -309,6 +342,11 @@ class MjpegStreamer:
                             t0 = time.time()
                             frames = 0
                         frame_parts = []
+                except CodecUnsupportedError as e:
+                    # 码流不受支持(如 H264): 永久错误, 报错退出不重连(重连只会无限刷日志)
+                    self.error = str(e)
+                    logger.error("取流 %s:%s(%s) 码流不受支持: %s", self.ip, self.rtsp_port, self.stream, e)
+                    break
                 except (ConnectionError, OSError, socket.timeout) as e:
                     # 断线: 清理连接, 退避重连(不退出线程)
                     if sock:

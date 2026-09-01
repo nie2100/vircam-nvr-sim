@@ -13,11 +13,12 @@
   - **MJPEG 码流**：**动态合成特效画面**——8 种主题（赛博扫描 / 矩阵雨 / 极光 / 雷达 / 脉冲 / 星空 / 数据流 / 合成波），叠加身份信息面板、LIVE 徽标、实时时间戳与帧计数；主题按设备 MAC/序列号/IP 稳定散列分配，**同一设备固定特效、不同设备各异**（实测 8/8 渲染正常）
   - 也支持加载本地图片 / 视频 / `.h264` 裸流作为画面来源，H264 / H265 / MJPEG 三种编码
 - **快照**：`GET /onvif/snapshot.jpg` → 带时间戳、水印、8 种主题特效的动态 JPEG（Pillow 生成，无 Pillow 时降级内置小图）
-- **认证**：WS-UsernameToken + HTTP Digest（默认 `admin/12345`，可配置）
+- **认证**：WS-UsernameToken + HTTP Digest（默认 `admin/12345`，可配置）；快照认证可配置——`require_snapshot_auth=True` 时 `GET /onvif/snapshot.jpg` 要求 Basic 认证（贴近真实设备，默认 `False` 兼容免密快照）
 - **故障注入**：`wrong_password` / `slow` / `disable_discovery` / `disable_media`，用于测试录像机添加摄像头失败时的表现
 
 ### 🖥️ 虚拟 NVR（`NvrSimManager` + `MjpegStreamer`）
 - **RTSP 客户端**：对摄像头（真实或虚拟）OPTIONS / DESCRIBE / SETUP / PLAY 取流，RTP/AVP/TCP interleaved
+- **码流检测**：DESCRIBE 时解析 SDP `a=rtpmap` 行校验编码，**非 MJPEG 码流直接报错**「码流格式 X 不受支持——当前仅支持 MJPEG 码流」且线程退出不重连（避免 H264 载荷被 RFC2435 误解析成乱码画面的静默失败）
 - **MJPEG 解包**：RFC2435（8B JPEG 头 + fragment offset 分片重组）
 - **JPEG 重建**：从样例提取 SOF0/DHT/SOS 模板 + RTP 内嵌量化表 → 完整 JPEG（与 ffmpeg `rtpdec_jpeg.c` 同思路）
 - **HTML5 转流**：`multipart/x-mixed-replace` → `<img>` 浏览器原生播放，零插件、零依赖（纯标准库，Pillow 仅可选优化）

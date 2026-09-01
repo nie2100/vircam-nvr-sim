@@ -763,7 +763,9 @@ class OnvifCamSimulator:
         bitrate_kbps: int = 4096,             # 码率 kbps
         fps: int = 25,                        # 帧率
         codec: str = "H264",                  # H264 / H265 / MJPEG
+        require_snapshot_auth: bool = False,  # 快照是否要求 Basic 认证(真实设备默认要, 2026-09-01)
     ):
+        self.require_snapshot_auth = require_snapshot_auth
         self.host_ip = host_ip
         self.http_port = http_port
         self.rtsp_port = rtsp_port
@@ -1486,6 +1488,8 @@ class OnvifCamSimulator:
             return
         ssrc = self._h264_ssrc
         seq = random.randint(0, 0xFFFF)
+        # 同 _rtsp_send_mjpeg: 发送阶段去掉接收超时(防客户端短暂停读被误断)
+        conn.settimeout(None)
         base_fps = max(1, self._play_fps if self._play_frames else (self._h264_fps or 25))
         fps = self.sub_fps if stream == "sub" else base_fps
         frame_interval = 1.0 / fps
@@ -1682,6 +1686,11 @@ class OnvifCamSimulator:
         seq = random.randint(0, 0xFFFF)
         ts = 0
         sub = (stream == "sub")
+        # 2026-09-01 BUG-2 缓解(DSH 实测: 启动窗口期偶发收 1 帧即断):
+        # _rtsp_conn 设置的 settimeout(10) 在发送阶段仍生效——客户端短暂停读
+        # (如重组/处理帧)时 sendall 阻塞超时 → socket.timeout(OSError 子类) →
+        # 静默 pass 断开连接。发送是主动的, 不需要接收超时。
+        conn.settimeout(None)
         base_fps = max(1, self._play_fps or 25)
         fps = self.sub_fps if sub else base_fps
         interval = 1.0 / fps
@@ -1888,6 +1897,22 @@ class OnvifCamSimulator:
                 path = self.path.split("?")[0]
                 if path in ("/onvif/snapshot.jpg", "/snapshot.jpg", "/onvif/snapshot", "/snapshot"):
                     sim._log("snapshot", f"GET {self.path} from {self.client_address[0]}")
+                    # 2026-09-01 建议(DSH 实测): 真实摄像头快照默认要认证,
+                    # 快照认证做成可配置(require_snapshot_auth=True 时校验 Basic)
+                    if getattr(sim, "require_snapshot_auth", False):
+                        auth = self.headers.get("Authorization", "")
+                        ok = False
+                        if auth.startswith("Basic "):
+                            import base64 as _b64
+                            try:
+                                u, p = _b64.b64decode(auth[6:]).decode("utf-8", "replace").split(":", 1)
+                                ok = (u == sim.username and p == sim.password)
+                            except Exception:
+                                ok = False
+                        if not ok:
+                            sim._log("snapshot", "401 未认证", ok=False)
+                            self._send(401, "text/plain", b"Unauthorized", extra={"WWW-Authenticate": 'Basic realm="ONVIF"'})
+                            return
                     body = sim._snapshot_bytes()
                     self._send(200, "image/jpeg", body)
                     return
