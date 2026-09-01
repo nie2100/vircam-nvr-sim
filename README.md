@@ -8,7 +8,10 @@
 - **ONVIF SOAP 服务**：Device / Media / PTZ / Events / Imaging 常用操作（ONVIF ver10/ver20）
 - **WS-Discovery**：UDP 3702 响应 Probe，录像机 / 搜索工具可直接发现它
 - **RTSP 服务**：OPTIONS / DESCRIBE / SETUP / PLAY 完整信令，主/子双码流（`/Streaming/Channels/101`、`/102`）
-- **真实视频帧**：内置 H.264 彩条测试流（640×360 / 25fps，50 帧循环），录像机可真正解码出画面；也支持加载本地图片 / 视频 / `.h264` 裸流，H264 / H265 / MJPEG 三种编码
+- **真实视频帧**：录像机可真正解码出画面，无自定义媒体源时按编码分两种画面——
+  - **H264 / H265 码流**：内置彩条测试流（640×360 / 25fps，50 帧循环）
+  - **MJPEG 码流**：**动态合成特效画面**——8 种主题（赛博扫描 / 矩阵雨 / 极光 / 雷达 / 脉冲 / 星空 / 数据流 / 合成波），叠加身份信息面板、LIVE 徽标、实时时间戳与帧计数；主题按设备 MAC/序列号/IP 稳定散列分配，**同一设备固定特效、不同设备各异**（实测 8/8 渲染正常）
+  - 也支持加载本地图片 / 视频 / `.h264` 裸流作为画面来源，H264 / H265 / MJPEG 三种编码
 - **快照**：`GET /onvif/snapshot.jpg` → 带时间戳、水印、8 种主题特效的动态 JPEG（Pillow 生成，无 Pillow 时降级内置小图）
 - **认证**：WS-UsernameToken + HTTP Digest（默认 `admin/12345`，可配置）
 - **故障注入**：`wrong_password` / `slow` / `disable_discovery` / `disable_media`，用于测试录像机添加摄像头失败时的表现
@@ -33,6 +36,7 @@ python examples/smoke_test.py
 python examples/run_camera.py
 #   快照  http://127.0.0.1:8000/onvif/snapshot.jpg
 #   RTSP  rtsp://127.0.0.1:8554/Streaming/Channels/101
+#   默认 H264 码流 = 彩条画面; 加 --codec MJPEG 看动态特效画面(8 主题随机一)
 #   ffplay 直接打开上面的 RTSP 地址即可看到画面
 
 # 一站式自闭环演示: 虚拟摄像头 → 虚拟 NVR → 浏览器双画面
